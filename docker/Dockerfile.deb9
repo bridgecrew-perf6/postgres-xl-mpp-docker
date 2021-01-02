@@ -1,19 +1,15 @@
-# docker build -t mpp/pg-xl:v1 -f Dockerfile.deb9 .
+# docker build --force-rm -t mpp/pg-xl:v1.1 -f Dockerfile.deb9 .
+# service ssh stop/start
 FROM debian:9-slim as build
 
-ARG SOURCE_FROM="git"
-ARG SOURCE="git://git.postgresql.org/git/postgres-xl.git"
+ARG PGXL_SOURCE=postgres-xl-10r1.1
 
 RUN echo '' > /etc/apt/sources.list
 RUN echo "\
 deb http://mirrors.aliyun.com/debian/ stretch main non-free contrib \n\
-deb-src http://mirrors.aliyun.com/debian/ stretch main non-free contrib \n\
 deb http://mirrors.aliyun.com/debian-security stretch/updates main \n\
-deb-src http://mirrors.aliyun.com/debian-security stretch/updates main \n\
 deb http://mirrors.aliyun.com/debian/ stretch-updates main non-free contrib \n\
-deb-src http://mirrors.aliyun.com/debian/ stretch-updates main non-free contrib \n\
 deb http://mirrors.aliyun.com/debian/ stretch-backports main non-free contrib \n\
-deb-src http://mirrors.aliyun.com/debian/ stretch-backports main non-free contrib \n\
 " > /etc/apt/sources.list
 
 RUN cat /etc/apt/sources.list
@@ -32,42 +28,21 @@ RUN apt-get update \
 	&& ln -s /usr/bin/make /usr/bin/gmake \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN echo "[INFO] Download code of Postgres-XL, mode: $SOURCE_FROM"; \
-	if [ "$SOURCE_FROM" = "git" ]; then \
-		git clone $SOURCE --depth 20; \
-	elif [ "$SOURCE_FROM" = "http" ]; then \
-		FILE_NAME=$(echo $SOURCE | tr -s "/" " " | awk '{ print $NF }'); \
-		FILE_EXT=$(echo $FILE_NAME | tr -s "." " " \
-			| awk '{ print $(NF-1)"."$(NF) }'); \
-		curl -SL $SOURCE -o $FILE_NAME; \
-		if [ "$FILE_EXT" = "tar.bz2" ]; then \
-			tar xjf $FILE_NAME; \
-		elif [ "$FILE_EXT" = "tar.gz" ]; then \
-			tar xzf $FILE_NAME; \
-		else \
-			tar xf $FILE_NAME; \
-		fi; \
-		rm -f $FILE_NAME; \
-	else \
-		echo "[ERROR] Variable not valid SOURCE_FROM"; \
-		exit 1; \
-	fi
+WORKDIR /app
+RUN cd /app
+# ADD with auto tar -xzf
+#ADD ${PGXL_SOURCE}.tar.gz /app
+ADD https://www.postgres-xl.org/downloads/postgres-xl-10r1.1.tar.gz /app
+RUN tar -xzf postgres-xl-10r1.1.tar.gz
 
-#adduser --uid 999 --disabled-password --gecos "" postgres 
-RUN echo "[INFO] Install Postgres-XL, mode: $SOURCE_FROM"; \
-	cd $(ls -la | grep -E '^d.*postgres-xl' | awk '{ print $NF }'); \
-	./configure \
-		&& make -j$(nproc) \
-		&& cd contrib \
-		&& make -j$(nproc) \
-		&& cd pgxc_ctl \
-		&& make install \
-		&& cd / && cd $(ls -la | grep -E '^d.*postgres-xl' | awk '{ print $NF }') \
-		&& make install \
-		&& cd contrib \
-		&& make install \
-		&& cd pgxc_ctl \
-		&& make install
+RUN pwd	\
+	&& ls -lh
+	#&& tar -xzf ./${PGXL_SOURCE}.tar.gz
+
+#cd $(ls -la | grep -E '^d.*postgres-xl' | awk '{ print $NF }'); \
+RUN echo "[INFO] Install Postgres-XL, $PGXL_SOURCE"; 
+RUN cd $PGXL_SOURCE && pwd && ls && ./configure && make && make install
+RUN pwd && ls && cd $PGXL_SOURCE/contrib && make && make install
 
 #-------- build complate -------
 FROM debian:9-slim
@@ -80,23 +55,10 @@ ENV POSTGRES_HOSTNAME=pg-xl-db \
 	POSTGRES_PORT=5432 \
 	POSTGRES_MAX_CONNECTIONS=1024 \
 	POSTGRES_SHARED_QUEUES_SIZE=64kB \
-	GTM_HOST=postgresxlgtm \
-	GTM_PORT=5432 \
-	PGXC_NODE_NAME=pg-xl-db \
-	POOLER_PORT=5432 \
-	POOL_CONN_KEEPALIVE=1500 \
-	POOL_MAINTANCE_TIMEOUT=200 \
-	MAX_COORDINATORS=16 \
-	MAX_DATANODES=16 \
-	REMOTE_QUERY_COST=100.0 \
-	NETWORK_BYTE_COST=0.002 \
-	POSTGRES_MAX_PREPARED_TRANSACTIONS=30 \
-	POSTGRES_SHARED_QUEUES=60 \
-	GTM_PROXY_PORT=5432 \
-	GTM_PROXY_WORKERS=4 \
 	DEBUG="false"
 
-ENV POSTGRES_DATA=$POSTGRES_HOME/data \
+#ENV POSTGRES_DATA=$POSTGRES_HOME/data \
+ENV POSTGRES_DATA=/app \
 	MAX_POOL_SIZE=$POSTGRES_MAX_CONNECTIONS \
 	PATH=/usr/local/pgsql/bin:$PATH \
 	LD_LIBRARY_PATH=/usr/local/pgsql/lib
@@ -104,27 +66,33 @@ ENV POSTGRES_DATA=$POSTGRES_HOME/data \
 RUN echo '' > /etc/apt/sources.list
 RUN echo "\
 deb http://mirrors.aliyun.com/debian/ stretch main non-free contrib \n\
-deb-src http://mirrors.aliyun.com/debian/ stretch main non-free contrib \n\
 deb http://mirrors.aliyun.com/debian-security stretch/updates main \n\
-deb-src http://mirrors.aliyun.com/debian-security stretch/updates main \n\
 deb http://mirrors.aliyun.com/debian/ stretch-updates main non-free contrib \n\
-deb-src http://mirrors.aliyun.com/debian/ stretch-updates main non-free contrib \n\
 deb http://mirrors.aliyun.com/debian/ stretch-backports main non-free contrib \n\
-deb-src http://mirrors.aliyun.com/debian/ stretch-backports main non-free contrib \n\
 " > /etc/apt/sources.list
 
 RUN apt-get update \
 	&& apt-get install -y procps nano \
+	&& apt install -y openssh-server \
 	&& apt-get install -y \
 		libreadline-dev \
 	&& rm -rf /var/lib/apt/lists/* \
-	&& useradd $POSTGRES_USER -u 999 -d $POSTGRES_HOME \
+	&& useradd $POSTGRES_USER -u 26 -d $POSTGRES_DATA -s /bin/bash \
 	&& mkdir -p $POSTGRES_DATA \
-	&& chown -R $POSTGRES_USER $POSTGRES_HOME
+	&& chown -R $POSTGRES_USER $POSTGRES_HOME \
+	&& chown -R $POSTGRES_USER $POSTGRES_DATA \
+	&& rm -f /etc/ssh/ssh_host_*key
 
-USER $POSTGRES_USER
-WORKDIR $POSTGRES_HOME
+RUN dpkg-reconfigure openssh-server
+RUN mkdir /run/sshd
+RUN echo 'postgres:softlan9' | chpasswd
+#RUN echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
 
-EXPOSE 5432
-VOLUME ["/usr/local/pgsql/data"]
-ENTRYPOINT ["/bin/bash"]
+#USER $POSTGRES_USER
+WORKDIR $POSTGRES_DATA
+
+EXPOSE 5432 22
+VOLUME [$POSTGRES_DATA]
+ENTRYPOINT ["/usr/sbin/sshd", "-D"]
+#ENTRYPOINT service ssh restart && su postgres
+# can't run sshd without root user, so USER=root
